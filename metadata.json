@@ -1,0 +1,5 @@
+{
+  "name": "Bio-Compound Analyzer",
+  "description": "A multi-agent scientific pipeline for rigorous biological compound research and clinical synthesis.",
+  "requestFramePermissions": []
+}
