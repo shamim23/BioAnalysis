@@ -51,6 +51,13 @@ export interface OptimizationResult {
   suggestedCompounds: string[];
 }
 
+export interface CitationAudit {
+  total: number;
+  verified: string[];
+  unverifiable: string[];
+  notes: string;
+}
+
 export interface ResearchReport {
   compound: string;
   biomarkers?: string;
@@ -60,4 +67,5 @@ export interface ResearchReport {
   comparison?: ComparisonData;
   purity?: ContaminantData;
   optimization?: OptimizationResult;
+  citations?: CitationAudit;
 }

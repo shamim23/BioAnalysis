@@ -1,9 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 
+export type ModelTier = "fast" | "strong";
+
 export interface GenerateContentOptions {
   responseMimeType?: "application/json";
   enableSearch?: boolean;
+  tier?: ModelTier;
 }
 
 export interface GenerateContentResult {
@@ -12,20 +15,30 @@ export interface GenerateContentResult {
 
 export interface AIProvider {
   readonly name: string;
-  readonly model: string;
   generateContent(prompt: string, options?: GenerateContentOptions): Promise<GenerateContentResult>;
+  modelFor(tier: ModelTier): string;
 }
 
-const GEMINI_MODEL = "gemini-2.0-flash";
-const OPENAI_MODEL = "gpt-4o-mini";
+const GEMINI_MODELS: Record<ModelTier, string> = {
+  fast: "gemini-2.0-flash",
+  strong: "gemini-2.5-pro",
+};
+
+const OPENAI_MODELS: Record<ModelTier, string> = {
+  fast: "gpt-4o-mini",
+  strong: "gpt-4o",
+};
 
 class GeminiProvider implements AIProvider {
   readonly name = "Gemini";
-  readonly model = GEMINI_MODEL;
   private ai: GoogleGenAI;
 
   constructor(apiKey: string) {
     this.ai = new GoogleGenAI({ apiKey });
+  }
+
+  modelFor(tier: ModelTier) {
+    return GEMINI_MODELS[tier];
   }
 
   async generateContent(
@@ -41,7 +54,7 @@ class GeminiProvider implements AIProvider {
     }
 
     const response = await this.ai.models.generateContent({
-      model: this.model,
+      model: this.modelFor(options?.tier ?? "fast"),
       contents: prompt,
       config,
     });
@@ -52,11 +65,14 @@ class GeminiProvider implements AIProvider {
 
 class OpenAIProvider implements AIProvider {
   readonly name = "OpenAI";
-  readonly model = OPENAI_MODEL;
   private client: OpenAI;
 
   constructor(apiKey: string) {
     this.client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
+  }
+
+  modelFor(tier: ModelTier) {
+    return OPENAI_MODELS[tier];
   }
 
   async generateContent(
@@ -68,13 +84,12 @@ class OpenAIProvider implements AIProvider {
     ];
 
     const chatOptions: OpenAI.Chat.ChatCompletionCreateParams = {
-      model: this.model,
+      model: this.modelFor(options?.tier ?? "fast"),
       messages,
     };
 
     if (options?.responseMimeType === "application/json") {
       chatOptions.response_format = { type: "json_object" };
-      // Ensure the prompt mentions JSON so the model knows what to do
       if (!prompt.toLowerCase().includes("json")) {
         messages[0].content = prompt + "\n\nRespond with valid JSON only.";
       }
@@ -107,7 +122,7 @@ export function createAIProvider(): AIProvider {
 export function getActiveEngineName(): string {
   const provider = process.env.AI_PROVIDER?.toLowerCase() || "gemini";
   if (provider === "openai") {
-    return "OpenAI GPT-4o Mini";
+    return `OpenAI (${OPENAI_MODELS.fast} / ${OPENAI_MODELS.strong})`;
   }
-  return "Gemini 2.0 Flash";
+  return `Gemini (${GEMINI_MODELS.fast} / ${GEMINI_MODELS.strong})`;
 }

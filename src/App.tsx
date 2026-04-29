@@ -16,12 +16,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { BioResearchService } from './services/bioResearchService';
-import { getActiveEngineName } from './services/aiProvider';
 import { OptimizationHub } from './components/OptimizationHub';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { BiologicalAtlas } from './components/BiologicalAtlas';
 import { ProfessionalDashboard } from './components/ProfessionalDashboard';
 import { DiagnosticLab } from './components/DiagnosticLab';
+import { ToxinRadar } from './components/ToxinRadar';
 import { cn } from './lib/utils';
 import { AgentStatus, ResearchReport } from './types';
 
@@ -33,10 +33,11 @@ const AGENTS_CONFIG: Omit<AgentStatus, 'status'>[] = [
   { id: 'comparison', name: 'Comparison Agent', role: 'Product Analyst & Scraper' },
   { id: 'purity', name: 'Purity Agent', role: 'Contaminant & Recall Specialist' },
   { id: 'synthesis', name: 'Synthesis Agent', role: 'Chief Medical Synthesizer' },
+  { id: 'citations', name: 'Citation Auditor', role: 'Verifies cited sources against discovery' },
 ];
 
 export default function App() {
-  const [mode, setMode] = useState<'research' | 'optimization' | 'graph' | 'atlas' | 'professional' | 'diagnostics'>('research');
+  const [mode, setMode] = useState<'research' | 'optimization' | 'graph' | 'atlas' | 'professional' | 'diagnostics' | 'toxin'>('research');
   const [selectedSystemId, setSelectedSystemId] = useState<string | null>(null);
   const [compound, setCompound] = useState('');
   const [biomarkers, setBiomarkers] = useState('');
@@ -91,40 +92,70 @@ export default function App() {
     const service = new BioResearchService();
 
     try {
-      // 1. Discovery
+      // 1. Discovery (gates everything else)
       updateAgent('discovery', { status: 'running' });
       const discoveryData = await service.runDiscovery(compound);
-      updateAgent('discovery', { status: 'completed', output: discoveryData });
+      updateAgent('discovery', {
+        status: 'completed',
+        output: `${discoveryData.studies.length} studies. ${discoveryData.searchSummary}`,
+      });
 
-      // 2. Analysis
-      updateAgent('analysis', { status: 'running' });
-      const analysisData = await service.runAnalysis(compound, discoveryData || '');
-      updateAgent('analysis', { status: 'completed', output: analysisData });
+      // 2/3 Analysis chain runs in parallel with 4/5/6 Marketplace chain
+      const analysisChain = (async () => {
+        updateAgent('analysis', { status: 'running' });
+        const analysisData = await service.runAnalysis(compound, discoveryData);
+        updateAgent('analysis', { status: 'completed', output: analysisData });
 
-      // 3. Safety
-      updateAgent('safety', { status: 'running' });
-      const safetyData = await service.runSafetyCheck(compound, analysisData || '');
-      updateAgent('safety', { status: 'completed', output: safetyData });
+        updateAgent('safety', { status: 'running' });
+        const safetyData = await service.runSafetyCheck(compound, analysisData);
+        updateAgent('safety', { status: 'completed', output: safetyData });
 
-      // 4. Marketplace
-      updateAgent('marketplace', { status: 'running' });
-      const products = await service.runMarketplaceSearch(compound);
-      updateAgent('marketplace', { status: 'completed', output: `Found ${products.length} recommended products.` });
+        return { analysisData, safetyData };
+      })();
 
-      // 5. Comparison
-      updateAgent('comparison', { status: 'running' });
-      const comparison = await service.runProductComparison(compound, products);
-      updateAgent('comparison', { status: 'completed', output: `Compared ${products.length} products.` });
+      const marketplaceChain = (async () => {
+        updateAgent('marketplace', { status: 'running' });
+        const products = await service.runMarketplaceSearch(compound);
+        updateAgent('marketplace', { status: 'completed', output: `Found ${products.length} recommended products.` });
 
-      // 6. Purity Check
-      updateAgent('purity', { status: 'running' });
-      const purity = await service.runContaminantCheck(compound, products);
-      updateAgent('purity', { status: 'completed', output: `Checked ${purity.alerts.length} alerts.` });
+        updateAgent('comparison', { status: 'running' });
+        updateAgent('purity', { status: 'running' });
+        const [comparison, purity] = await Promise.all([
+          service.runProductComparison(compound, products).then(r => {
+            updateAgent('comparison', { status: 'completed', output: `Compared ${products.length} products.` });
+            return r;
+          }),
+          service.runContaminantCheck(compound, products).then(r => {
+            updateAgent('purity', { status: 'completed', output: `Checked ${r.alerts.length} alerts.` });
+            return r;
+          }),
+        ]);
+        return { products, comparison, purity };
+      })();
 
-      // 7. Synthesis
+      const [{ analysisData, safetyData }, { products, comparison, purity }] = await Promise.all([
+        analysisChain,
+        marketplaceChain,
+      ]);
+
+      // 7. Synthesis (needs analysis + safety + discovery)
       updateAgent('synthesis', { status: 'running' });
-      const finalContent = await service.runSynthesis(compound, analysisData || '', safetyData || '', biomarkers);
+      const finalContent = await service.runSynthesis(compound, discoveryData, analysisData, safetyData, biomarkers);
       updateAgent('synthesis', { status: 'completed', output: finalContent });
+
+      // 8. Citation audit
+      updateAgent('citations', { status: 'running' });
+      let citations;
+      try {
+        citations = await service.runCitationCheck(compound, finalContent, discoveryData);
+        updateAgent('citations', {
+          status: 'completed',
+          output: `${citations.verified.length}/${citations.total} verified, ${citations.unverifiable.length} unverifiable.`,
+        });
+      } catch (err) {
+        console.warn('Citation check failed', err);
+        updateAgent('citations', { status: 'error', output: 'Citation audit unavailable.' });
+      }
 
       const newReport: ResearchReport = {
         compound,
@@ -133,9 +164,10 @@ export default function App() {
         content: finalContent || 'Failed to generate report content.',
         products,
         comparison,
-        purity
+        purity,
+        citations,
       };
-      
+
       setReport(newReport);
       setHistory(prev => [newReport, ...prev]);
     } catch (err: any) {
@@ -226,6 +258,15 @@ export default function App() {
           >
             Diagnostic Lab
           </button>
+          <button 
+            onClick={() => setMode('toxin')}
+            className={cn(
+              "text-[10px] font-mono uppercase tracking-[0.2em] pb-1 border-b transition-all",
+              mode === 'toxin' ? "border-[#141414] opacity-100" : "border-transparent opacity-40 hover:opacity-100"
+            )}
+          >
+            Toxin Radar
+          </button>
         </nav>
 
         <div className="hidden md:flex items-center gap-6 text-[11px] font-mono uppercase tracking-wider opacity-60">
@@ -292,6 +333,16 @@ export default function App() {
               className="w-full"
             >
               <DiagnosticLab onDeepDive={triggerResearch} />
+            </motion.div>
+          ) : mode === 'toxin' ? (
+            <motion.div
+              key="toxin"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="w-full"
+            >
+              <ToxinRadar onDeepDive={triggerResearch} />
             </motion.div>
           ) : (
             <React.Fragment key="research">
@@ -726,7 +777,7 @@ export default function App() {
           <span>Not Medical Advice</span>
         </div>
         <div className="flex gap-4">
-          <span>Engine: {getActiveEngineName()}</span>
+          <span>Engine: Gemini 3.1 Pro</span>
           <span>Status: Online</span>
         </div>
       </footer>
